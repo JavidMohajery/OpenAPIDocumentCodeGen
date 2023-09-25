@@ -13,10 +13,15 @@ let schema = "https://petstore.swagger.io/v2/swagger.json"
 let httpClient = new HttpClient()
 let project = "petStore"
 
-let rec createFSharpType (propertyName: string) (required: bool) (propertySchema: OpenApiSchema) =
+let capitalize (input: string) =
+    if not (String.isNotNullOrEmpty input)
+    then ""
+    else input.First().ToString().ToUpper() + String.Join("", input.Skip(1))
+
+let rec createFieldType (recordName: string) (propertyName: string) (required: bool) (propertySchema: OpenApiSchema) =
     if not required
     then 
-        let optionalType : SynType = createFSharpType propertyName true propertySchema
+        let optionalType : SynType = createFieldType recordName propertyName true propertySchema
         SynType.Option(optionalType)
     else
     match propertySchema.Type with
@@ -25,14 +30,13 @@ let rec createFSharpType (propertyName: string) (required: bool) (propertySchema
     | "string" when propertySchema.Format = "uuid" -> SynType.CreateLongIdent(LongIdentWithDots.Create ["System"; "Guid"])
     | "string" when propertySchema.Format = "date-time" -> SynType.DateTimeOffset()
     | "array" ->
-        let arrayItemsType = createFSharpType propertyName required  propertySchema.Items
+        let arrayItemsType = createFieldType recordName propertyName required  propertySchema.Items
         SynType.List(arrayItemsType)
+    | "string" when not (isNull propertySchema.Enum) && propertySchema.Enum.Count > 0 ->
+        SynType.Create (recordName + capitalize propertyName)
+    | _ when not (isNull propertySchema.Reference) -> SynType.Create propertySchema.Reference.Id
     | _ -> SynType.String()
 
-let capitalize (input: string) =
-    if not (String.isNotNullOrEmpty input)
-    then ""
-    else input.First().ToString().ToUpper() + String.Join("", input.Skip(1))
 
 let compiledName (name: string) = SynAttribute.Create("CompiledName", name)
 let createEnumType (enumType: (string * seq<string>)) =
@@ -60,13 +64,6 @@ let createEnumType (enumType: (string * seq<string>)) =
             let attrs = [ SynAttributeList.Create [|compiledName value|]]
             SynUnionCase.UnionCase (attrs, Ident.Create (capitalize value), SynUnionCaseType.UnionCaseFields [], PreXmlDoc.Empty, None, range0)
     ]
-
-    // let enumRepresentation = SynTypeDefnSimpleReprUnionRcd.Create([
-    //     for value in values ->
-    //         let attrs = [ SynAttributeList.Create [|compiledName value|] ]
-    //         let docs = PreXmlDoc.Empty
-    //         SynUnionCase.SynUnionCase(attrs, Ident.Create (capitalize value), SynUnionCaseType.UnionCaseFields [], docs, None, Range.range0, { BarRange = None})
-    // ])
 
     let simpleType = SynTypeDefnSimpleReprRcd.Union(enumRepresentation)
     SynModuleDecl.CreateSimpleType(info, simpleType)
@@ -96,7 +93,7 @@ let main argv =
             for property in schema.Properties do
                 let propertyName = property.Key
                 let propertyType = property.Value
-                let field = SynFieldRcd.Create(propertyName, createFSharpType propertyName (schema.Required.Contains propertyName) propertyType)
+                let field = SynFieldRcd.Create(propertyName, createFieldType recordName propertyName (schema.Required.Contains propertyName) propertyType)
                 let docs = PreXmlDoc.Create [if String.isNotNullOrEmpty propertyType.Description then propertyType.Description]
                 {field with XmlDoc = docs}
         ]
