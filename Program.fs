@@ -26,9 +26,12 @@ let rec createFieldType (recordName: string) (propertyName: string) (required: b
     else
     match propertySchema.Type with
     | "integer" when propertySchema.Format = "int64" -> SynType.Int64()
-    | "integer" when propertySchema.Format = "int32" -> SynType.Int()
+    | "integer" -> SynType.Int()
+    | "number" when propertySchema.Format = "float" -> SynType.Create "float32"
+    | "number" -> SynType.Create "double"
     | "string" when propertySchema.Format = "uuid" -> SynType.CreateLongIdent(LongIdentWithDots.Create ["System"; "Guid"])
     | "string" when propertySchema.Format = "date-time" -> SynType.DateTimeOffset()
+    | "string" when propertySchema.Format = "byte" -> SynType.Array(1, SynType.Create "buyte", range0)
     | "array" ->
         let arrayItemsType = createFieldType recordName propertyName required  propertySchema.Items
         SynType.List(arrayItemsType)
