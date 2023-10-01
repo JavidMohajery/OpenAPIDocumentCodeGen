@@ -8,9 +8,26 @@ open FSharp.Compiler.XmlDoc
 open FSharp.Compiler.Range
 open System
 open System.Linq
+open System.IO
 
-let schema = "https://petstore.swagger.io/v2/swagger.json"
+let resolvePath (path:string)  =
+    if Path.IsPathRooted path
+    then path
+    else Path.GetFullPath (Path.Combine(Environment.CurrentDirectory, path))
+
 let httpClient = new HttpClient()
+let getSchema (schemaPath: string) =
+    if File.Exists schemaPath
+    then new FileStream(schemaPath, FileMode.Open) :> Stream
+    elif schemaPath.StartsWith "http"
+    then 
+        httpClient.GetStreamAsync(schemaPath)
+            |> Async.AwaitTask
+            |> Async.RunSynchronously
+    else
+        failwith "failed to create a stream for the specified schema path"
+let schemaPath = "./petstore.json"
+let schema = "https://petstore.swagger.io/v2/swagger.json"
 let project = "petStore"
 
 let capitalize (input: string) =
@@ -69,16 +86,32 @@ let createEnumType (enumType: (string * seq<string>)) =
     ]
 
     let simpleType = SynTypeDefnSimpleReprRcd.Union(enumRepresentation)
-    SynModuleDecl.CreateSimpleType(info, simpleType)
+
+
+    let members: SynMemberDefn list = [
+        let constRecord : SynPatConstRcd = {
+            Const = SynConst.Unit
+            Range = range0
+        }
+        let clauses : SynMatchClause list = [
+            for value in values do
+                let id = LongIdentWithDots.CreateString(capitalize value)
+                let pattern = SynPat.LongIdent(id, None, None, SynArgPats.Empty, None, range0)
+                SynMatchClause.Clause(pattern, None, SynExpr.Const(SynConst.CreateString(value), range0), range0, DebugPointForTarget.No)
+        ]
+        SynMemberDefn.CreateMember 
+            { SynBindingRcd.Null with 
+                Pattern = SynPatRcd.CreateLongIdent (LongIdentWithDots.CreateString("this.Format"), [SynPatRcd.Const constRecord])
+                Expr = SynExpr.Match(DebugPointForBinding.DebugPointAtBinding range0, SynExpr.Ident(Ident.Create("this")), clauses, range0)
+            }
+    ]
+    SynModuleDecl.CreateSimpleType(info, simpleType, members)
 
 [<EntryPoint>]
 let main argv =
-    let response = 
-        httpClient.GetStreamAsync(schema)
-        |> Async.AwaitTask
-        |> Async.RunSynchronously
+    let schema = getSchema (resolvePath "./petStore.json")
     let reader = new OpenApiStreamReader()
-    let (openApiDocument, diagnostic: OpenApiDiagnostic) = reader.Read(response)
+    let (openApiDocument, diagnostic: OpenApiDiagnostic) = reader.Read(schema)
 
     let createRecordFromSchema (recordName: string) (schema : OpenApiSchema) =
         let info: SynComponentInfoRcd = {
@@ -141,7 +174,11 @@ let main argv =
     let globalTypes = [
         yield! enumTypes
         for schema in openApiDocument.Components.Schemas do
-            createRecordFromSchema schema.Key schema.Value
+            let typeName = 
+                if String.IsNullOrEmpty schema.Value.Title
+                then schema.Key
+                else schema.Value.Title  
+            createRecordFromSchema typeName schema.Value
     ]
     let globalTypesModule = CodeGen.createQualifiedModule [project;"Types"] globalTypes
     let code = CodeGen.formatAst (CodeGen.createFile "Test" [globalTypesModule]) 
